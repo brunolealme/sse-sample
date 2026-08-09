@@ -1,0 +1,15 @@
+spring:
+  application:
+    name: sse-sample
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      ssl:
+        enabled: false
+      connect-timeout: 5000ms
+      timeout: 3000ms
+app:
+  cache:
+    context-ttl-seconds: 300 # 5 minutos configuráveis
