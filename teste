@@ -1,127 +1,117 @@
-Revise integralmente a implementação atual relacionada às TASK-387 e TASK-388 do projeto "risk-chat".
+Prompt para revisão do fluxo "/ask" e persistência Redis
 
-Antes de alterar qualquer código, consulte e confronte:
+Revise a implementação atual do fluxo de perguntas do "ChatService", principalmente o endpoint "/ask", considerando os requisitos das tasks de Redis e a modelagem definida no TDD do projeto.
 
-- descrição e critérios das TASK-387 e TASK-388 no Atlassian/Jira;
-- TDD do projeto, principalmente as seções relacionadas à arquitetura, fluxo do chat, contratos de API e modelagem Redis;
-- implementação atual da branch;
-- testes unitários e de integração relacionados;
-- configurações Redis existentes no projeto.
+Contexto importante:
 
-Não assuma que a implementação atual está correta e não assuma que ela está errada. Derive os requisitos diretamente das tasks e do TDD.
+- O "ChatService" atual deve ser tratado como um mock temporário para simular a comunicação com o agente/IA e permitir a validação da persistência Redis.
+- A orquestração definitiva da conversa será implementada em outra task, portanto não crie uma arquitetura definitiva ou responsabilidades que pertençam ao futuro orquestrador.
+- A implementação deve continuar reativa, compatível com Kotlin, Spring WebFlux, Coroutines/Flow e SSE.
+- Preserve o comportamento atual de streaming da resposta em chunks, salvo se alguma alteração for necessária para atender aos requisitos.
 
-Contexto de escopo:
+Considere especialmente a modelagem Redis definida no TDD:
 
-- TASK-387: histórico por sessão no Redis.
-- TASK-388: índice de sessões do usuário no Redis.
-- A orquestração real do SSE ainda será implementada em outra task.
-- Classes atualmente usadas para simular esse fluxo não devem receber responsabilidades pertencentes ao futuro orquestrador apenas para completar estas tasks.
-- Cache de contexto pertence à TASK-389.
-- Resiliência/fail-open pertence à TASK-390.
-- Persistência durável em Oracle não faz parte dessas duas implementações Redis.
+Histórico da conversa
 
-Fase 1 — análise
+Chave:
 
-Para a TASK-387, determine a partir da documentação:
+"iara:memory:{sessionId}"
 
-- formato da chave Redis;
-- estrutura de dados Redis esperada;
-- formato e conteúdo dos elementos persistidos;
-- comportamento de inclusão de novos itens;
-- ordenação esperada;
-- comportamento de leitura;
-- comportamento de remoção/limpeza;
-- TTL e quando ele deve ser aplicado ou renovado;
-- responsabilidades do repository e do service;
-- comportamento esperado em ambiente reativo;
-- testes necessários para comprovar os requisitos.
+Tipo:
 
-Para a TASK-388, determine:
+"List"
 
-- formato da chave Redis;
-- estrutura de dados Redis esperada;
-- conteúdo armazenado no índice;
-- critério utilizado para ordenação;
-- significado e atualização do score;
-- comportamento de criação e atualização de uma sessão existente;
-- informações necessárias para retornar o resumo de uma sessão;
-- origem correta de campos derivados, incluindo contadores;
-- comportamento esperado do TTL;
-- comportamento de paginação/listagem, caso faça parte do escopo;
-- responsabilidades do repository e do service;
-- testes necessários.
+Conteúdo:
 
-Pontos que devem ser investigados, não presumidos
+Cada elemento representa um turno individual da conversa, composto por:
 
-Durante a análise, verifique especificamente se existem ambiguidades ou inconsistências entre documentação e implementação relacionadas a:
+- "role"
+- "timestamp"
+- "content"
 
-- significado exato do TTL de 21 dias;
-- diferença entre expiração da key e expiração individual de sessões dentro de um Sorted Set;
-- significado de "messagesCount";
-- diferença entre mensagem individual e turno de conversa;
-- relação entre o histórico da sessão e o endpoint de limpeza de "/context";
-- informações mutáveis e imutáveis de uma sessão;
-- possíveis múltiplas fontes de verdade;
-- atualização do último acesso;
-- ordenação do histórico e do índice;
-- atomicidade ou consistência entre operações Redis relacionadas.
+TTL:
 
-Não implemente automaticamente uma solução apenas porque um desses pontos parece problemático. Primeiro verifique o que as tasks e o TDD realmente exigem.
+21 dias.
 
-Fase 2 — comparação com a implementação atual
+Um turno de usuário e um turno de agente são elementos diferentes da lista.
 
-Depois de levantar os requisitos, compare-os com o código atual e classifique cada ponto como:
+Exemplo conceitual:
 
-- atende;
-- atende parcialmente;
-- não atende;
-- ambíguo na documentação;
-- fora do escopo dessas tasks.
+- USER | timestamp | pergunta do cliente
+- ASSISTANT | timestamp | resposta do agente
 
-Identifique também:
+Uma interação pergunta/resposta, portanto, deve gerar dois turnos distintos no histórico.
 
-- código desnecessário;
-- responsabilidades colocadas na camada errada;
-- duplicação de estado;
-- risco de inconsistência;
-- uso incorreto das estruturas Redis;
-- problemas de composição reativa;
-- chamadas bloqueantes;
-- "subscribe()" manual ou quebra da cadeia reativa;
-- problemas de serialização;
-- problemas de TTL;
-- race conditions relevantes;
-- testes que validam implementação em vez de comportamento.
+Índice de sessões
 
-Fase 3 — alterações
+Chave:
 
-Após concluir a análise, faça somente as alterações necessárias para que TASK-387 e TASK-388 atendam ao que está documentado.
+"iara:sessions:{userId}"
 
-Regras:
+Tipo:
 
-- mantenha as alterações de TASK-387 e TASK-388 claramente separáveis;
-- não implemente antecipadamente TASK-389 ou TASK-390;
-- não implemente o futuro orquestrador SSE;
-- não altere contratos públicos sem necessidade comprovada pela documentação;
-- preserve o modelo reativo com Kotlin, Spring WebFlux e "ReactiveRedisTemplate";
-- não use operações bloqueantes;
-- prefira alterações pequenas e alinhadas à arquitetura já existente;
-- não crie novas abstrações sem necessidade;
-- atualize ou crie testes para validar os comportamentos corrigidos.
+"Sorted Set"
 
-Se houver um requisito importante que não possa ser determinado com segurança a partir do TDD ou das tasks, não escolha silenciosamente uma interpretação. Registre explicitamente a ambiguidade e explique quais comportamentos possíveis existem.
+Objetivo:
 
-Resultado esperado
+Manter as sessões do usuário ordenadas pelo último acesso para permitir a listagem do histórico.
 
-Ao terminar, apresente:
+O "score" do Sorted Set deve representar somente o último acesso da sessão.
 
-1. requisitos encontrados para TASK-387;
-2. requisitos encontrados para TASK-388;
-3. divergências encontradas no código;
-4. ambiguidades ou inconsistências encontradas na documentação;
-5. arquivos alterados e motivo de cada alteração;
-6. testes criados ou modificados;
-7. itens que deliberadamente não foram alterados por pertencerem a outras tasks;
-8. pontos que precisam de confirmação humana antes de qualquer alteração adicional.
+Não utilize quantidade de mensagens, quantidade de turnos, data de criação ou qualquer outra informação para composição do score.
 
-Depois disso, execute os testes relevantes e informe o resultado.
+---
+
+Analise a implementação atual do "ChatService", "MemoryService", modelos envolvidos e repositories Redis relacionados antes de realizar alterações.
+
+Verifique especialmente:
+
+1. Se o modelo atualmente utilizado para representar "ConversationTurn" corresponde ao TDD.
+
+2. Se pergunta e resposta estão sendo persistidas como um único objeto ou como dois turnos independentes.
+
+3. Se a pergunta do usuário deveria ser persistida antes da geração/streaming da resposta.
+
+4. Se a resposta completa do agente deve ser persistida como um único turno após o streaming, em vez de persistir individualmente os chunks SSE.
+
+5. Se o loop responsável pelo "response.chunked(...)" deve permanecer exclusivamente responsável pelo streaming SSE.
+
+6. Se a persistência dos turnos está excessivamente acoplada à criação/atualização dos metadados da sessão.
+
+7. Se métodos como "recordTurn", "persistTurn", "appendTurn", "upsertSession" ou equivalentes possuem responsabilidades coerentes com a modelagem do TDD.
+
+8. Se a atualização de "iara:sessions:{userId}" está sendo realizada utilizando exclusivamente "lastAccessAt" como score.
+
+9. Se há atualizações desnecessárias do Sorted Set para cada mensagem quando uma única atualização do último acesso da sessão seria suficiente.
+
+10. Se "messagesCount" está sendo tratado como fonte de verdade indevida ou influenciando a ordenação das sessões.
+
+11. Se campos atualmente presentes em "ConversationTurn", como "question", "answer", "chatHistoryId", "feedback" ou equivalentes, realmente pertencem ao modelo Redis definido pelo TDD ou se estão misturando modelos de responsabilidades diferentes.
+
+12. Se "chatHistoryId" ainda é necessário para o contrato SSE ou outras partes do sistema, preserve-o onde necessário, mas não o mantenha no modelo Redis apenas por conveniência caso o requisito não determine isso.
+
+13. Preserve corretamente o comportamento de criação versus atualização de uma sessão existente, principalmente campos imutáveis como "createdAt", título inicial e demais metadados que não devam ser sobrescritos em todo "/ask".
+
+14. Garanta que TTLs continuem sendo aplicados conforme especificado pelas tasks.
+
+15. Revise e atualize os testes unitários e de integração afetados pelas alterações.
+
+Antes de modificar o código, consulte como fonte de verdade, nesta ordem:
+
+1. documentação/TDD do projeto;
+2. descrição e critérios das tasks relacionadas ao histórico e índice de sessões;
+3. implementação existente;
+4. testes existentes.
+
+Não assuma que a implementação atual está correta apenas porque já possui testes.
+
+Também não altere contratos, modelos ou comportamentos não relacionados sem necessidade.
+
+Ao final:
+
+- implemente somente as alterações necessárias para alinhar o código aos requisitos;
+- execute os testes relacionados;
+- informe quais arquivos foram alterados;
+- explique resumidamente cada alteração;
+- destaque qualquer ponto em que a documentação ou as tasks sejam ambíguas ou entrem em conflito com a implementação atual;
+- não invente requisitos para resolver ambiguidades: sinalize-as.
