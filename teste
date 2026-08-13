@@ -1,145 +1,127 @@
-Quero que você revise e ajuste a implementação e os testes relacionados à TASK-388 do projeto risk-chat.
+Revise integralmente a implementação atual relacionada às TASK-387 e TASK-388 do projeto "risk-chat".
 
-Você tem acesso ao MCP da Atlassian. Antes de alterar qualquer código:
+Antes de alterar qualquer código, consulte e confronte:
 
-1. Consulte a TASK-388 e, se necessário para entender dependências/limites, consulte também TASK-387, TASK-389 e TASK-390.
-2. Use a descrição, critérios de aceite, comentários e contexto da TASK-388 como fonte primária de verdade.
-3. Compare o que a task pede com a implementação atual e com os testes existentes.
-4. Não altere testes apenas para fazê-los passar.
-5. Não altere código de produção sem identificar primeiro qual requisito ou bug justifica a mudança.
+- descrição e critérios das TASK-387 e TASK-388 no Atlassian/Jira;
+- TDD do projeto, principalmente as seções relacionadas à arquitetura, fluxo do chat, contratos de API e modelagem Redis;
+- implementação atual da branch;
+- testes unitários e de integração relacionados;
+- configurações Redis existentes no projeto.
 
-Contexto técnico do projeto:
-- Kotlin
-- Spring WebFlux
-- Coroutines
-- ReactiveRedisTemplate / ReactiveStringRedisTemplate
-- Redis
+Não assuma que a implementação atual está correta e não assuma que ela está errada. Derive os requisitos diretamente das tasks e do TDD.
 
-Escopo esperado da TASK-388:
-- índice de sessões por usuário;
-- ordenação por último acesso;
-- suporte ao painel de histórico/"nova conversa";
-- respeitar a separação de responsabilidade em relação às outras subtasks.
+Contexto de escopo:
 
-Decisões já aplicadas no código e que devem ser revisadas contra o que a TASK-388 realmente pede:
+- TASK-387: histórico por sessão no Redis.
+- TASK-388: índice de sessões do usuário no Redis.
+- A orquestração real do SSE ainda será implementada em outra task.
+- Classes atualmente usadas para simular esse fluxo não devem receber responsabilidades pertencentes ao futuro orquestrador apenas para completar estas tasks.
+- Cache de contexto pertence à TASK-389.
+- Resiliência/fail-open pertence à TASK-390.
+- Persistência durável em Oracle não faz parte dessas duas implementações Redis.
 
-- O índice do usuário usa Redis ZSET.
-- A key é baseada no usuário.
-- O member é o sessionId.
-- O score representa lastAccessAt.
-- A listagem usa ordem reversa para retornar as sessões mais recentes primeiro.
+Fase 1 — análise
 
-- Os metadados da sessão são armazenados em Redis HASH.
+Para a TASK-387, determine a partir da documentação:
 
-- O upsert passou a distinguir campos imutáveis de campos mutáveis.
-  Campos como sessionId, namSession, system, userId e createdAt são preservados após a criação.
-  lastAccessAt e demais dados efetivamente mutáveis podem ser atualizados.
+- formato da chave Redis;
+- estrutura de dados Redis esperada;
+- formato e conteúdo dos elementos persistidos;
+- comportamento de inclusão de novos itens;
+- ordenação esperada;
+- comportamento de leitura;
+- comportamento de remoção/limpeza;
+- TTL e quando ele deve ser aplicado ou renovado;
+- responsabilidades do repository e do service;
+- comportamento esperado em ambiente reativo;
+- testes necessários para comprovar os requisitos.
 
-- messagesCount passou a ter uma única fonte de verdade no HASH da sessão.
-  O contador é incrementado em upsertSessionOnTurn().
-  getSession() não deve recalcular messagesCount consultando o histórico da TASK-387.
-  RedisSessionIndexRepository não deve depender de SessionMemoryRepository apenas para contar turnos.
+Para a TASK-388, determine:
 
-- RedisSessionMemoryRepository.appendTurn() pertence ao contexto da TASK-387 e deve continuar responsável pelo histórico da sessão.
-  Não mova responsabilidade do índice para esse repository.
+- formato da chave Redis;
+- estrutura de dados Redis esperada;
+- conteúdo armazenado no índice;
+- critério utilizado para ordenação;
+- significado e atualização do score;
+- comportamento de criação e atualização de uma sessão existente;
+- informações necessárias para retornar o resumo de uma sessão;
+- origem correta de campos derivados, incluindo contadores;
+- comportamento esperado do TTL;
+- comportamento de paginação/listagem, caso faça parte do escopo;
+- responsabilidades do repository e do service;
+- testes necessários.
 
-- O fluxo que processa um turno deve coordenar, na camada adequada:
-    appendTurn()
-    +
-    upsertSessionOnTurn()
+Pontos que devem ser investigados, não presumidos
 
-  Verifique no código atual se essa orquestração existe e se está correta.
+Durante a análise, verifique especificamente se existem ambiguidades ou inconsistências entre documentação e implementação relacionadas a:
 
-- Foi adicionada limpeza de membros antigos do ZSET baseada no score/TTL.
-  Verifique se a operação reativa realmente é executada e se esse comportamento é compatível com a regra da TASK-388.
+- significado exato do TTL de 21 dias;
+- diferença entre expiração da key e expiração individual de sessões dentro de um Sorted Set;
+- significado de "messagesCount";
+- diferença entre mensagem individual e turno de conversa;
+- relação entre o histórico da sessão e o endpoint de limpeza de "/context";
+- informações mutáveis e imutáveis de uma sessão;
+- possíveis múltiplas fontes de verdade;
+- atualização do último acesso;
+- ordenação do histórico e do índice;
+- atomicidade ou consistência entre operações Redis relacionadas.
 
-Problema atual conhecido:
+Não implemente automaticamente uma solução apenas porque um desses pontos parece problemático. Primeiro verifique o que as tasks e o TDD realmente exigem.
 
-O teste RedisSessionIndexRepositoryStatusIntegrationTest possui um cenário aproximadamente assim:
+Fase 2 — comparação com a implementação atual
 
-memoryRepository.appendTurn(...)
-memoryRepository.appendTurn(...)
-indexRepository.upsertSessionOnTurn(metadata)
+Depois de levantar os requisitos, compare-os com o código atual e classifique cada ponto como:
 
-e depois espera:
+- atende;
+- atende parcialmente;
+- não atende;
+- ambíguo na documentação;
+- fora do escopo dessas tasks.
 
-messagesCount == 2
+Identifique também:
 
-Após a mudança para uma única fonte de verdade, o resultado é 1, porque upsertSessionOnTurn() foi chamado apenas uma vez.
+- código desnecessário;
+- responsabilidades colocadas na camada errada;
+- duplicação de estado;
+- risco de inconsistência;
+- uso incorreto das estruturas Redis;
+- problemas de composição reativa;
+- chamadas bloqueantes;
+- "subscribe()" manual ou quebra da cadeia reativa;
+- problemas de serialização;
+- problemas de TTL;
+- race conditions relevantes;
+- testes que validam implementação em vez de comportamento.
 
-Não volte a usar SessionMemoryRepository.countTurns() dentro de RedisSessionIndexRepository para fazer o teste passar.
+Fase 3 — alterações
 
-Primeiro determine, com base no objetivo do teste e no requisito da TASK-388, qual comportamento correto deve ser testado.
+Após concluir a análise, faça somente as alterações necessárias para que TASK-387 e TASK-388 atendam ao que está documentado.
 
-Se o teste for específico do RedisSessionIndexRepository:
-- exercite o repository pela sua própria API;
-- se o cenário representa dois turnos, faça dois upserts;
-- remova uso de RedisSessionMemoryRepository se ele não fizer parte do comportamento testado.
+Regras:
 
-Se o teste pretende validar o fluxo completo:
-- use a camada de orquestração apropriada, como MemoryService ou equivalente;
-- valide que cada turno produz histórico + atualização do índice.
+- mantenha as alterações de TASK-387 e TASK-388 claramente separáveis;
+- não implemente antecipadamente TASK-389 ou TASK-390;
+- não implemente o futuro orquestrador SSE;
+- não altere contratos públicos sem necessidade comprovada pela documentação;
+- preserve o modelo reativo com Kotlin, Spring WebFlux e "ReactiveRedisTemplate";
+- não use operações bloqueantes;
+- prefira alterações pequenas e alinhadas à arquitetura já existente;
+- não crie novas abstrações sem necessidade;
+- atualize ou crie testes para validar os comportamentos corrigidos.
 
-Não altere simplesmente:
-isEqualTo(2)
-para
-isEqualTo(1)
-se o cenário funcional representa dois turnos.
+Se houver um requisito importante que não possa ser determinado com segurança a partir do TDD ou das tasks, não escolha silenciosamente uma interpretação. Registre explicitamente a ambiguidade e explique quais comportamentos possíveis existem.
 
-Também revise estes pontos, sempre confrontando com o que está especificado na TASK-388:
+Resultado esperado
 
-1. touch()
-Verifique se atualizar uma sessionKey inexistente pode recriar um HASH parcial.
-Se isso violar o comportamento esperado, proteja a operação.
+Ao terminar, apresente:
 
-2. updateStatus()
-Faça a mesma verificação sobre sessão inexistente.
+1. requisitos encontrados para TASK-387;
+2. requisitos encontrados para TASK-388;
+3. divergências encontradas no código;
+4. ambiguidades ou inconsistências encontradas na documentação;
+5. arquivos alterados e motivo de cada alteração;
+6. testes criados ou modificados;
+7. itens que deliberadamente não foram alterados por pertencerem a outras tasks;
+8. pontos que precisam de confirmação humana antes de qualquer alteração adicional.
 
-3. status no upsert
-Determine se status deve ser atualizado em cada turno ou se deve ser criado inicialmente e alterado somente por updateStatus().
-Não invente uma regra; use a task, o domínio e os testes como referência.
-
-4. paginação
-Revise edge cases de page/size e preserve validações já existentes em outras camadas.
-
-5. código reativo
-Garanta que nenhuma operação Reactive Redis fique sem subscription/await.
-Prefira os await* já adotados no projeto.
-
-6. TTL e índice
-Valide se o comportamento do TTL do HASH e do ZSET produz o resultado esperado pela TASK-388, inclusive para sessões antigas e índices órfãos.
-
-7. separação entre tasks
-Não implemente funcionalidades da TASK-389 ou TASK-390 dentro desta correção.
-Não mova responsabilidades da TASK-387 para a TASK-388 sem necessidade explícita.
-
-Quero que você faça o trabalho nesta ordem:
-
-1. Leia a TASK-388 via MCP Atlassian.
-2. Inspecione a implementação atual.
-3. Inspecione todos os testes unitários e de integração relacionados.
-4. Liste internamente quais testes estão:
-   - corretos;
-   - obsoletos;
-   - cobrindo comportamento incorreto;
-   - faltando cobertura.
-5. Corrija primeiro os testes obsoletos.
-6. Corrija código produtivo apenas quando houver bug real ou requisito não atendido.
-7. Execute os testes relevantes.
-8. Revise o diff final para evitar mudanças fora de escopo.
-
-Ao final, me apresente um resumo contendo:
-
-- o que a TASK-388 exige segundo o Atlassian;
-- divergências encontradas entre task, código e testes;
-- arquivos alterados;
-- testes alterados/adicionados;
-- bugs de produção corrigidos;
-- decisões tomadas e justificativas;
-- testes executados e resultado;
-- qualquer ponto ambíguo que não tenha sido possível resolver somente pela especificação.
-
-Não faça refatorações amplas sem necessidade.
-Não introduza novas dependências.
-Não masque falhas apenas ajustando asserts.
-Não altere contratos públicos sem justificativa.
+Depois disso, execute os testes relevantes e informe o resultado.
